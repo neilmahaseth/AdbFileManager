@@ -316,6 +316,7 @@ class AdbFileOperationsTest {
             windowsPushWorkaroundEnabled = false
         )
 
+        assertTrue(operations.checkPermission("data"))
         val dataFolders = FileUtils.parseStatOutput(operations.loadFiles("data"))
         assertEquals(listOf("data", "app", "local"), dataFolders.map { it.fileName })
         assertTrue(dataFolders.all { it.isDir })
