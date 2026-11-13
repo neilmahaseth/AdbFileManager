@@ -7,6 +7,20 @@ import kotlin.test.assertTrue
 
 class FileUtilsTest {
     @Test
+    fun `stat parser extracts file names from absolute find paths`() {
+        val files = FileUtils.parseStatOutput(
+            listOf(
+                "directory|drwx------|2|root|root|4096|0|/data/data/com.example/files|/data/data/com.example/files",
+                "regular file|-rw-r--r--|1|root|root|12|0|/data/local/tmp/test.txt|/data/local/tmp/test.txt"
+            )
+        )
+
+        assertEquals(listOf("files", "test.txt"), files.map { it.fileName })
+        assertTrue(files[0].isDir)
+        assertFalse(files[1].isDir)
+    }
+
+    @Test
     fun `stat parser preserves raw size and timestamp for accurate sorting and progress`() {
         val files = FileUtils.parseStatOutput(
             listOf(
