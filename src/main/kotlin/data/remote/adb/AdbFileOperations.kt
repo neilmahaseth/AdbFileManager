@@ -820,7 +820,7 @@ class AdbFileOperations(
         private const val REMOTE_STAGE_PREFIX = "adb-file-manager-"
         private const val CLIPBOARD_HELPER_CLASS = "top.wkbin.clipboard.ClipboardHelper"
         private const val CLIPBOARD_SUCCESS_MARKER = "CLIPBOARD_SET_OK"
-        private val RUN_AS_PACKAGE = Regex("^[A-Za-z_][A-Za-z0-9_]*(\\\\.[A-Za-z_][A-Za-z0-9_]*)+$")
+        private val RUN_AS_PACKAGE = Regex("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$")
 
         @OptIn(ExperimentalResourceApi::class)
         private suspend fun loadClipboardHelper(): ByteArray {
