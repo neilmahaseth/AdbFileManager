@@ -335,7 +335,7 @@ class AdbFileOperations(
         if (pkg == null || isDeviceRooted(device)) {
             return adb.shell(device, *args, throwOnError = throwOnError)
         }
-        return adb.shell(device, "run-as", pkg, "sh", "-c", args.joinToString(" "), throwOnError = throwOnError)
+        return adb.shell(device, "run-as", pkg, "sh", "-c", shellQuote(args.joinToString(" ")), throwOnError = throwOnError)
     }
 
     private fun packageNameForPath(path: String): String? {
