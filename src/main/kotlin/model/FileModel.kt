@@ -135,7 +135,7 @@ object FileUtils {
             val permissions = tokens[1]
             val size = tokens[5].toLongOrNull() ?: 0
             val timestamp = tokens[6]
-            val name = tokens[7]
+            val name = tokens[7].substringAfterLast('/')
 
             val isDir = type.contains("directory", ignoreCase = true)
             val isLink = type.contains("symbolic link", ignoreCase = true)
