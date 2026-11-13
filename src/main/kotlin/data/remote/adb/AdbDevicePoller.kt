@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import model.AppSettings
 import kotlin.time.Duration.Companion.milliseconds
 
 class AdbDevicePoller(private val adb: Adb) {
@@ -16,7 +17,11 @@ class AdbDevicePoller(private val adb: Adb) {
     private val _currentDevice = MutableStateFlow<AdbDevice?>(null)
     val currentDevice: StateFlow<AdbDevice?> = _currentDevice
 
-    private val fileOperations = AdbFileOperations(adb, { _currentDevice.value })
+    private val fileOperations = AdbFileOperations(
+        adb = adb,
+        currentDeviceProvider = { _currentDevice.value },
+        runAsPackageProvider = { AppSettings.runAsPackage.takeIf { it.isNotBlank() } }
+    )
 
     fun startPolling(scope: CoroutineScope) = scope.launch(Dispatchers.IO) {
         while (isActive) {
@@ -89,6 +94,13 @@ class AdbDevicePoller(private val adb: Adb) {
         progressCallback: AdbTransferProgress
     ): kotlinx.coroutines.flow.Flow<String> {
         val device = _currentDevice.value ?: throw AdbDeviceNotFoundException()
+        val pkg = AppSettings.runAsPackage.trim()
+        if (pkg.isNotEmpty()) return flow {
+            progressCallback.onProgress(0)
+            adb.pullAs(device, pkg, remotePath, localPath, throwOnError = true)
+            progressCallback.onProgress(100)
+            emit("downloaded")
+        }
         return adb.pullWithProgress(device, remotePath, localPath, progressCallback)
     }
 
