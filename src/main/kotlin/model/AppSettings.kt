@@ -5,6 +5,8 @@ import kotlinx.coroutines.withContext
 import org.jetbrains.skiko.hostOs
 import java.io.File
 import java.util.prefs.Preferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 enum class AdbMode(val displayName: String) {
     BUNDLED("内置 ADB (推荐)"),
@@ -24,10 +26,18 @@ object AppSettings {
     private const val KEY_SCRCPY_TURN_SCREEN_OFF = "scrcpyTurnScreenOff"
     private const val KEY_SCRCPY_STAY_AWAKE = "scrcpyStayAwake"
     private const val KEY_SCRCPY_CUSTOM_PATH = "scrcpyCustomPath"
-
-    private val preferences by lazy {
-        Preferences.userNodeForPackage(AppSettings::class.java)
-    }
+    private const val KEY_RUN_AS_PACKAGE = "runAsPackage"
+    private val preferences by lazy { Preferences.userNodeForPackage(AppSettings::class.java) }
+    private val runAsPackageState = MutableStateFlow(runCatching { preferences.get(KEY_RUN_AS_PACKAGE, "") }.getOrDefault(""))
+    val runAsPackageFlow = runAsPackageState.asStateFlow()
+    var runAsPackage: String
+        get() = runCatching { preferences.get(KEY_RUN_AS_PACKAGE, "") }.getOrDefault("")
+        set(value) {
+            val v = value.trim()
+            require(v.isEmpty() || Regex("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$").matches(v))
+            preferences.put(KEY_RUN_AS_PACKAGE, v)
+            runAsPackageState.value = v
+        }
 
     var adbMode: AdbMode
         get() {
@@ -120,6 +130,7 @@ object AppSettings {
         scrcpyTurnScreenOff = false
         scrcpyStayAwake = false
         scrcpyCustomPath = ""
+        runAsPackage = ""
     }
 
     // ── Scrcpy 投屏设置 ─────────────────────────────────────────────
