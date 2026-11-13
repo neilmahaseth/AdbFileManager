@@ -421,7 +421,13 @@ class AdbFileOperationsTest {
         assertEquals(listOf("files"), entries.map { it.fileName })
         val runAsCall = adb.shellCalls.single { it.args.firstOrNull() == "run-as" }
         assertEquals("com.example.debug", runAsCall.args[1])
-        assertTrue(runAsCall.args.contains("sh"))
+        assertEquals("sh", runAsCall.args[2])
+        assertEquals("-c", runAsCall.args[3])
+        // sh -c must receive the entire find/stat expression as one command argument.
+        // Without this quoting, only "find" is executed and it recursively lists ".".
+        assertTrue(runAsCall.args[4].startsWith("'find "))
+        assertTrue(runAsCall.args[4].contains("-mindepth 1 -maxdepth 1"))
+        assertTrue(runAsCall.args[4].endsWith("{} +'"))
     }
 
     private data class PushCall(val localPath: String, val remotePath: String, val content: String)
