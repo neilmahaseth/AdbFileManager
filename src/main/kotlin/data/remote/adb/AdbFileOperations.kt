@@ -50,17 +50,18 @@ class AdbFileOperations(
     private suspend fun listDirectoryWithStat(device: AdbDevice, path: String): List<String> {
         val statFormat = "%F|%A|%h|%U|%G|%s|%Y|%n|%N"
         val escapedFormat = statFormat.replace("|", "\\|")
-        return fileShell(
-            device,
+        val command = mutableListOf(
             "find", shellQuote(path),
             "-mindepth", "1", "-maxdepth", "1",
-            "-exec", "stat", "-L", "-c", escapedFormat, "{}", "+",
-            // Some Android system entries are intentionally unreadable or dangling.
-            // Keep the entries find did read and prevent those per-entry errors from
-            // failing the entire directory listing (notably when browsing "/").
-            "2>/dev/null", "||", "true",
-            throwOnError = true
+            "-exec", "stat", "-L", "-c", escapedFormat, "{}", "+"
         )
+
+        // The Android root contains protected and dangling system entries. find may
+        // still print valid children but exit with code 1 for those individual entries.
+        // Suppress those diagnostics and keep the partial listing only for "/".
+        if (path == "/") command.addAll(listOf("2>/dev/null", "||", "true"))
+
+        return fileShell(device, *command.toTypedArray(), throwOnError = true)
     }
 
     private fun isSyntheticDataPath(path: String): Boolean =
