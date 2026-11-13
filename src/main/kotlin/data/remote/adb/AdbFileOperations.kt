@@ -133,10 +133,14 @@ class AdbFileOperations(
     suspend fun push(originPath: String, destinationPath: String) {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
         val safeDestPath = absoluteRemotePath(destinationPath)
-        val pkg = activeRunAsPackage()
-        if (pkg != null) pushPathAs(device, pkg, File(originPath), safeDestPath)
-        else if (windowsPushWorkaroundEnabled) pushPathFromWindows(device, File(originPath), safeDestPath)
-        else adb.push(device, originPath, safeDestPath, throwOnError = true)
+        val pkg = packageNameForPath(safeDestPath)
+        if (pkg != null && !isDeviceRooted(device)) {
+            pushPathAs(device, pkg, File(originPath), safeDestPath)
+        } else if (windowsPushWorkaroundEnabled) {
+            pushPathFromWindows(device, File(originPath), safeDestPath)
+        } else {
+            adb.push(device, originPath, safeDestPath, throwOnError = true)
+        }
     }
 
     fun pushWithProgress(
