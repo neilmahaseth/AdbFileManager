@@ -110,6 +110,18 @@ class AdbImpl(
         )
     }
 
+    override suspend fun pushAs(adbDevice: AdbDevice, packageName: String, localPath: String, remotePath: String, throwOnError: Boolean): List<String> {
+        require(RUN_AS_PACKAGE.matches(packageName)) { "Invalid Android package name: $packageName" }
+        return terminal.runWithInput(listOf(executablePath, "-s", adbDevice.deviceId, "exec-in", "run-as", packageName, "sh", "-c", "cat > ${quote(remotePath)}"), localPath)
+    }
+
+    override suspend fun pullAs(adbDevice: AdbDevice, packageName: String, remotePath: String, localPath: String, throwOnError: Boolean): List<String> {
+        require(RUN_AS_PACKAGE.matches(packageName)) { "Invalid Android package name: $packageName" }
+        return terminal.runWithOutput(listOf(executablePath, "-s", adbDevice.deviceId, "exec-out", "run-as", packageName, "sh", "-c", "cat -- ${quote(remotePath)}"), localPath)
+    }
+
+    private fun quote(s: String) = "'${s.replace("'", "'\\''")}'"
+
     override fun pushWithProgress(
         adbDevice: AdbDevice,
         localPath: String,
@@ -169,3 +181,6 @@ class AdbImpl(
         return AdbWifiState(true, ipAddress, port)
     }
 }
+
+
+private val RUN_AS_PACKAGE = Regex("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$")
