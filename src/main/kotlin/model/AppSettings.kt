@@ -24,11 +24,7 @@ object AppSettings {
     private const val KEY_SCRCPY_TURN_SCREEN_OFF = "scrcpyTurnScreenOff"
     private const val KEY_SCRCPY_STAY_AWAKE = "scrcpyStayAwake"
     private const val KEY_SCRCPY_CUSTOM_PATH = "scrcpyCustomPath"
-
-    private val preferences by lazy {
-        Preferences.userNodeForPackage(AppSettings::class.java)
-    }
-
+    private val preferences by lazy { Preferences.userNodeForPackage(AppSettings::class.java) }
     var adbMode: AdbMode
         get() {
             val name = runCatching { preferences.get(KEY_ADB_MODE, AdbMode.BUNDLED.name) }.getOrDefault(AdbMode.BUNDLED.name)

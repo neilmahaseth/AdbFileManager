@@ -12,6 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import model.FileUtils
 
 class AdbFileOperationsTest {
     private val device = AdbDevice("test-device", AdbWifiState.WIFI_UNAVAILABLE)
@@ -160,6 +161,34 @@ class AdbFileOperationsTest {
     }
 
     @Test
+    fun `directory listing keeps accessible entries when other paths are denied`() = runBlocking {
+        val adb = RecordingAdb().apply {
+            shellResponse = { args ->
+                when (args.firstOrNull()) {
+                    "id" -> listOf("uid=2000(shell) gid=2000(shell)")
+                    "find" -> listOf(
+                        "directory|drwxr-xr-x|1|root|root|4096|0|vendor|vendor",
+                        "directory|drwxrwx--x|1|system|system|4096|0|data|data"
+                    )
+                    else -> emptyList()
+                }
+            }
+        }
+        val operations = AdbFileOperations(
+            adb = adb,
+            currentDeviceProvider = { device },
+            windowsPushWorkaroundEnabled = false
+        )
+
+        val entries = operations.loadFiles("/")
+
+        assertEquals(2, entries.size)
+        val listingCall = adb.shellCalls.single { it.args.firstOrNull() == "find" }
+        assertEquals(listOf("2>/dev/null", "||", "true"), listingCall.args.takeLast(3))
+        assertTrue(listingCall.throwOnError)
+    }
+
+    @Test
     fun `searchFiles constructs find command with maxdepth and stat format`() = runBlocking {
         val adb = RecordingAdb()
         val operations = AdbFileOperations(
@@ -291,6 +320,114 @@ class AdbFileOperationsTest {
             operations.pushClipboard("must be acknowledged")
         }
         Unit
+    }
+
+    @Test
+    fun `non-root data directory exposes Aya-style synthetic folders and packages`() = runBlocking {
+        val adb = RecordingAdb().apply {
+            shellResponse = { args ->
+                when {
+                    args.firstOrNull() == "id" -> listOf("uid=2000(shell) gid=2000(shell)")
+                    args.firstOrNull() == "am" -> listOf("0")
+                    args.firstOrNull() == "pm" -> listOf(
+                        "package:android",
+                        "package:com.android.settings",
+                        "package:com.termux"
+                    )
+                    else -> emptyList()
+                }
+            }
+        }
+        val operations = AdbFileOperations(
+            adb = adb,
+            currentDeviceProvider = { device },
+            windowsPushWorkaroundEnabled = false
+        )
+
+        assertTrue(operations.checkPermission("data"))
+        val dataFolders = FileUtils.parseStatOutput(operations.loadFiles("data"))
+        assertEquals(listOf("data", "app", "local"), dataFolders.map { it.fileName })
+        assertTrue(dataFolders.all { it.isDir })
+
+        val packages = FileUtils.parseStatOutput(operations.loadFiles("data/data"))
+        assertEquals(
+            listOf("android", "com.android.settings", "com.termux"),
+            packages.map { it.fileName }
+        )
+        assertTrue(packages.all { it.isDir })
+    }
+
+    @Test
+    fun `data app tree is reconstructed from package apk paths`() = runBlocking {
+        val adb = RecordingAdb().apply {
+            shellResponse = { args ->
+                when {
+                    args.firstOrNull() == "id" -> listOf("uid=2000(shell) gid=2000(shell)")
+                    args.firstOrNull() == "pm" -> listOf(
+                        "package:/data/app/~~token/com.example.demo-abc/base.apk=com.example.demo",
+                        "package:/data/app/~~token/com.example.demo-abc/split_config.arm64_v8a.apk=com.example.demo"
+                    )
+                    else -> emptyList()
+                }
+            }
+        }
+        val operations = AdbFileOperations(
+            adb = adb,
+            currentDeviceProvider = { device },
+            windowsPushWorkaroundEnabled = false
+        )
+
+        val firstLevel = FileUtils.parseStatOutput(operations.loadFiles("data/app"))
+        assertEquals(listOf("~~token"), firstLevel.map { it.fileName })
+        assertTrue(firstLevel.single().isDir)
+
+        val secondLevel = FileUtils.parseStatOutput(operations.loadFiles("data/app/~~token"))
+        assertEquals(listOf("com.example.demo-abc"), secondLevel.map { it.fileName })
+        assertTrue(secondLevel.single().isDir)
+
+        val apkFiles = FileUtils.parseStatOutput(
+            operations.loadFiles("data/app/~~token/com.example.demo-abc")
+        )
+        assertEquals(
+            listOf("base.apk", "split_config.arm64_v8a.apk"),
+            apkFiles.map { it.fileName }
+        )
+        assertTrue(apkFiles.none { it.isDir })
+    }
+
+    @Test
+    fun `run-as package is selected from the private directory path`() = runBlocking {
+        val adb = RecordingAdb().apply {
+            shellResponse = { args ->
+                when {
+                    args.firstOrNull() == "id" -> listOf("uid=2000(shell) gid=2000(shell)")
+                    args.firstOrNull() == "run-as" -> listOf(
+                        "directory|drwx------|1|u0_a123|u0_a123|4096|0|files|files"
+                    )
+                    else -> emptyList()
+                }
+            }
+        }
+        val operations = AdbFileOperations(
+            adb = adb,
+            currentDeviceProvider = { device },
+            windowsPushWorkaroundEnabled = false
+        )
+
+        val entries = FileUtils.parseStatOutput(
+            operations.loadFiles("data/data/com.example.debug")
+        )
+
+        assertEquals(listOf("files"), entries.map { it.fileName })
+        val runAsCall = adb.shellCalls.single { it.args.firstOrNull() == "run-as" }
+        assertEquals("com.example.debug", runAsCall.args[1])
+        assertEquals("sh", runAsCall.args[2])
+        assertEquals("-c", runAsCall.args[3])
+        // sh -c must receive the entire find/stat expression as one command argument.
+        // Without this quoting, only "find" is executed and it recursively lists ".".
+        assertTrue(runAsCall.args[4].startsWith("'find "))
+        assertTrue(runAsCall.args[4].contains("-mindepth 1 -maxdepth 1"))
+        assertTrue(runAsCall.args[4].endsWith("{} +'"))
     }
 
     private data class PushCall(val localPath: String, val remotePath: String, val content: String)

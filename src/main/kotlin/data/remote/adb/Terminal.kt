@@ -2,6 +2,8 @@ package data.remote.adb
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -13,6 +15,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.job
 import model.StringsManager
+import java.io.File
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.milliseconds
 
 class Terminal(
@@ -30,6 +34,39 @@ class Terminal(
 
         executeProcess(commandArgs, commandArgs.joinToString(" "), throwOnError, timeoutMs)
     }
+
+    suspend fun runWithInput(commandArgs: List<String>, inputPath: String, timeoutMs: Long = defaultTimeoutMs): List<String> =
+        executeStreaming(commandArgs, inputPath, null, timeoutMs)
+
+    suspend fun runWithOutput(commandArgs: List<String>, outputPath: String, timeoutMs: Long = defaultTimeoutMs): List<String> =
+        executeStreaming(commandArgs, null, outputPath, timeoutMs)
+
+    private suspend fun executeStreaming(args: List<String>, input: String?, output: String?, timeoutMs: Long): List<String> =
+        withContext(Dispatchers.IO) {
+            require(args.isNotEmpty())
+            if (input != null) require(File(input).isFile) { "File not found: $input" }
+            val process = ProcessBuilder(args).start()
+            try {
+                coroutineScope {
+                    val stdout = async(Dispatchers.IO) {
+                        if (output == null) process.inputStream.use { it.copyTo(java.io.OutputStream.nullOutputStream()) }
+                        else File(output).outputStream().buffered().use { target -> process.inputStream.use { it.copyTo(target) } }
+                    }
+                    val stderr = async(Dispatchers.IO) { process.errorStream.bufferedReader().useLines { it.toList() } }
+                    if (input != null) File(input).inputStream().use { src -> process.outputStream.use { src.copyTo(it) } }
+                    else process.outputStream.close()
+                    if (!process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+                        process.destroyForcibly()
+                        throw AdbException("ADB streaming command timed out")
+                    }
+                    stdout.await()
+                    val errors = stderr.await()
+                    if (process.exitValue() != 0) throw AdbCommandException(process.exitValue(), errors,
+                        StringsManager.strings.value.terminalCommandFailed(process.exitValue(), errors.joinToString("\n")))
+                    errors
+                }
+            } finally { if (process.isAlive) process.destroyForcibly() }
+        }
 
     @OptIn(InternalCoroutinesApi::class)
     private suspend fun executeProcess(

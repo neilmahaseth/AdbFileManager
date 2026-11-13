@@ -12,7 +12,12 @@ interface Adb {
     suspend fun shell(adbDevice: AdbDevice, vararg args: String, throwOnError: Boolean = false): List<String>
     suspend fun push(adbDevice: AdbDevice, localPath: String, remotePath: String, throwOnError: Boolean = false): List<String>
     suspend fun pull(adbDevice: AdbDevice, remotePath: String, localPath: String, throwOnError: Boolean = false): List<String>
-    
+
+    suspend fun pushAs(adbDevice: AdbDevice, packageName: String, localPath: String, remotePath: String, throwOnError: Boolean = false): List<String> =
+        throw AdbException("run-as uploads are not supported")
+    suspend fun pullAs(adbDevice: AdbDevice, packageName: String, remotePath: String, localPath: String, throwOnError: Boolean = false): List<String> =
+        throw AdbException("run-as downloads are not supported")
+
     fun pushWithProgress(adbDevice: AdbDevice, localPath: String, remotePath: String, progressCallback: AdbTransferProgress): kotlinx.coroutines.flow.Flow<String>
     fun pullWithProgress(adbDevice: AdbDevice, remotePath: String, localPath: String, progressCallback: AdbTransferProgress): kotlinx.coroutines.flow.Flow<String>
 

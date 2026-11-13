@@ -29,20 +29,100 @@ class AdbFileOperations(
 ) {
     suspend fun delete(filePath: String) {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
-        adb.shell(device, "rm", "-rf", "--", shellQuote(absoluteRemotePath(filePath)), throwOnError = true)
+        fileShell(device, "rm", "-rf", "--", shellQuote(absoluteRemotePath(filePath)), throwOnError = true)
     }
 
     suspend fun loadFiles(directoryPath: String): List<String> {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
-        val safePath = if (directoryPath.isEmpty()) "/" else "/$directoryPath"
+        val safePath = normalizeRemotePath(directoryPath)
         println("Executing loadFiles for path: '$safePath'")
 
-        // ponytail: escape | as \| so the remote shell doesn't interpret it as pipe.
-        // Using cd && stat directly (no sh -c) so cd actually changes the working directory.
+        // Android deliberately restricts shell access to much of /data on production
+        // builds. Mirror Aya's useful, non-root directory view instead of pretending
+        // that run-as grants access to the whole /data tree.
+        if (isSyntheticDataPath(safePath) && !isDeviceRooted(device)) {
+            syntheticDataDirectoryListing(device, safePath)?.let { return it }
+        }
+
+        return listDirectoryWithStat(device, safePath)
+    }
+
+    private suspend fun listDirectoryWithStat(device: AdbDevice, path: String): List<String> {
         val statFormat = "%F|%A|%h|%U|%G|%s|%Y|%n|%N"
         val escapedFormat = statFormat.replace("|", "\\|")
-        val targetPath = shellQuote(safePath)
-        return adb.shell(device, "cd", targetPath, "&&", "stat", "-L", "-c", escapedFormat, "*", "2>/dev/null")
+        val command = mutableListOf(
+            "find", shellQuote(path),
+            "-mindepth", "1", "-maxdepth", "1",
+            "-exec", "stat", "-L", "-c", escapedFormat, "{}", "+"
+        )
+
+        // The Android root contains protected and dangling system entries. find may
+        // still print valid children but exit with code 1 for those individual entries.
+        // Suppress those diagnostics and keep the partial listing only for "/".
+        if (path == "/") command.addAll(listOf("2>/dev/null", "||", "true"))
+
+        return fileShell(device, *command.toTypedArray(), throwOnError = true)
+    }
+
+    private fun isSyntheticDataPath(path: String): Boolean =
+        path == "/data" ||
+            path == "/data/data" ||
+            path == "/data/app" ||
+            path == "/data/local" ||
+            path.startsWith("/data/app/")
+
+    private suspend fun syntheticDataDirectoryListing(device: AdbDevice, path: String): List<String>? {
+        return when (path) {
+            "/data" -> syntheticDirectoryRows(listOf("data", "app", "local"))
+            "/data/data" -> listAllPackageNames(device).map { syntheticDirectoryRow(it, true) }
+            "/data/app" -> listDataAppEntries(device, path)
+            "/data/local" -> syntheticDirectoryRows(listOf("tmp"))
+            else -> if (path.startsWith("/data/app/")) listDataAppEntries(device, path) else null
+        }
+    }
+
+    private suspend fun listAllPackageNames(device: AdbDevice): List<String> {
+        val userId = adb.shell(device, "am", "get-current-user", throwOnError = false)
+            .firstNotNullOfOrNull { it.trim().toIntOrNull() } ?: 0
+        return adb.shell(
+            device, "pm", "list", "packages", "--user", userId.toString(),
+            throwOnError = true
+        ).mapNotNull { line ->
+            line.trim().removePrefix("package:")
+                .takeIf { line.trim().startsWith("package:") }
+                ?.takeIf { it.isNotBlank() }
+        }.distinct().sorted()
+    }
+
+    private suspend fun listDataAppEntries(device: AdbDevice, directoryPath: String): List<String> {
+        val prefix = directoryPath.trimEnd('/') + "/"
+        val entries = linkedMapOf<String, Boolean>()
+        val output = adb.shell(device, "pm", "list", "packages", "-f", throwOnError = true)
+        output.forEach { line ->
+            val value = line.trim().removePrefix("package:")
+            if (!line.trim().startsWith("package:")) return@forEach
+            val apkPath = value.substringBefore('=')
+            if (!apkPath.startsWith(prefix)) return@forEach
+            val segments = apkPath.removePrefix(prefix).split('/').filter { it.isNotEmpty() }
+            if (segments.size > 1) {
+                entries[segments.first()] = true
+            } else if (segments.size == 1 && segments.first().endsWith(".apk", ignoreCase = true)) {
+                entries[segments.first()] = false
+            }
+        }
+        return entries.entries.sortedBy { it.key }.map { (name, isDirectory) ->
+            syntheticDirectoryRow(name, isDirectory)
+        }
+    }
+
+    private fun syntheticDirectoryRows(names: List<String>): List<String> =
+        names.map { syntheticDirectoryRow(it, true) }
+
+    private fun syntheticDirectoryRow(name: String, isDirectory: Boolean = true): String {
+        val type = if (isDirectory) "directory" else "regular file"
+        val mode = if (isDirectory) "drwx------" else "-rw-r--r--"
+        val size = if (isDirectory) "4096" else "0"
+        return listOf(type, mode, "1", "root", "root", size, "0", name, name).joinToString("|")
     }
 
     suspend fun searchFiles(directoryPath: String, query: String, maxDepth: Int = 4): List<String> {
@@ -52,7 +132,7 @@ class AdbFileOperations(
         val escapedFormat = statFormat.replace("|", "\\|")
         val targetPath = shellQuote(safePath)
         val findPattern = "*$query*"
-        return adb.shell(
+        return fileShell(
             device,
             "find", targetPath,
             "-maxdepth", maxDepth.toString(),
@@ -65,7 +145,10 @@ class AdbFileOperations(
     suspend fun push(originPath: String, destinationPath: String) {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
         val safeDestPath = absoluteRemotePath(destinationPath)
-        if (windowsPushWorkaroundEnabled) {
+        val pkg = packageNameForPath(safeDestPath)
+        if (pkg != null && !isDeviceRooted(device)) {
+            pushPathAs(device, pkg, File(originPath), safeDestPath)
+        } else if (windowsPushWorkaroundEnabled) {
             pushPathFromWindows(device, File(originPath), safeDestPath)
         } else {
             adb.push(device, originPath, safeDestPath, throwOnError = true)
@@ -79,31 +162,70 @@ class AdbFileOperations(
     ): Flow<String> {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
         val safeDestPath = absoluteRemotePath(destinationPath)
-        if (!windowsPushWorkaroundEnabled) {
-            return adb.pushWithProgress(device, originPath, safeDestPath, progressCallback)
-        }
-
         return flow {
             val source = File(originPath)
-            require(source.isFile) { "Progress upload requires a file: $originPath" }
-            pushFileFromWindows(device, source, safeDestPath, progressCallback) { emit(it) }
+            val pkg = packageNameForPath(safeDestPath)
+            if (pkg != null && !isDeviceRooted(device)) {
+                require(source.isFile) { "Progress upload requires a file: $originPath" }
+                progressCallback.onProgress(0)
+                pushPathAs(device, pkg, source, safeDestPath)
+                progressCallback.onProgress(100)
+                emit("uploaded")
+            } else if (windowsPushWorkaroundEnabled) {
+                require(source.isFile) { "Progress upload requires a file: $originPath" }
+                pushFileFromWindows(device, source, safeDestPath, progressCallback) { emit(it) }
+            } else {
+                adb.pushWithProgress(device, source.absolutePath, safeDestPath, progressCallback)
+                    .collect { emit(it) }
+            }
         }
     }
 
     suspend fun pull(originPath: String, destinationPath: String) {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
-        val safeOriginPath = if (originPath.isEmpty()) "/" else "/$originPath"
-        adb.pull(device, safeOriginPath, destinationPath, throwOnError = true)
+        val safeOriginPath = normalizeRemotePath(originPath)
+        val pkg = packageNameForPath(safeOriginPath)
+        if (pkg != null && !isDeviceRooted(device)) {
+            adb.pullAs(device, pkg, safeOriginPath, destinationPath, throwOnError = true)
+        } else {
+            adb.pull(device, safeOriginPath, destinationPath, throwOnError = true)
+        }
+    }
+
+    fun pullWithProgress(
+        remotePath: String,
+        localPath: String,
+        progressCallback: AdbTransferProgress
+    ): Flow<String> {
+        val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
+        val safeRemotePath = normalizeRemotePath(remotePath)
+        return flow {
+            val pkg = packageNameForPath(safeRemotePath)
+            if (pkg != null && !isDeviceRooted(device)) {
+                progressCallback.onProgress(0)
+                adb.pullAs(device, pkg, safeRemotePath, localPath, throwOnError = true)
+                progressCallback.onProgress(100)
+                emit("downloaded")
+            } else {
+                adb.pullWithProgress(device, safeRemotePath, localPath, progressCallback)
+                    .collect { emit(it) }
+            }
+        }
     }
 
     suspend fun checkPermission(directoryPath: String): Boolean {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
-        val safePath = if (directoryPath.isEmpty()) "/" else "/$directoryPath"
+        val safePath = normalizeRemotePath(directoryPath)
+        if (isSyntheticDataPath(safePath) && !isDeviceRooted(device)) return true
+
         return try {
-            // ponytail: same fix as loadFiles — cd directly, not via sh -c
-            val result = adb.shell(device, "cd", "'$safePath'", "&&", "echo", "SUCCESS", "||", "echo", "FAILURE")
-            !result.any { it.contains("Permission denied") || it.contains("FAILURE") }
-        } catch (e: Exception) {
+            val result = fileShell(
+                device,
+                "cd", shellQuote(safePath), "&&", "echo", "SUCCESS", "||", "echo", "FAILURE",
+                throwOnError = true
+            )
+            result.any { it.trim() == "SUCCESS" }
+        } catch (_: Exception) {
             false
         }
     }
@@ -111,7 +233,7 @@ class AdbFileOperations(
     suspend fun renameFile(directoryPath: String, oldName: String, newName: String) {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
         val safePath = if (directoryPath.isEmpty()) "/" else "/$directoryPath"
-        adb.shell(
+        fileShell(
             device,
             "mv",
             "--",
@@ -124,7 +246,7 @@ class AdbFileOperations(
     suspend fun createDirectory(directoryPath: String, dirName: String) {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
         val safePath = if (directoryPath.isEmpty()) "/" else "/$directoryPath"
-        adb.shell(
+        fileShell(
             device,
             "mkdir", "-p",
             "--", shellQuote(appendRemotePath(safePath, dirName)),
@@ -141,11 +263,7 @@ class AdbFileOperations(
             tempFile.writeText(content)
             val destPath = if (directoryPath.isEmpty()) "/" else "/$directoryPath"
             val remoteFilePath = appendRemotePath(destPath, fileName)
-            if (windowsPushWorkaroundEnabled) {
-                pushFileFromWindows(device, tempFile, remoteFilePath)
-            } else {
-                adb.push(device, tempFile.absolutePath, remoteFilePath, throwOnError = true)
-            }
+            push(tempFile.absolutePath, remoteFilePath)
         } finally {
             tempFile.delete()
         }
@@ -212,6 +330,54 @@ class AdbFileOperations(
         }
     }
 
+    private suspend fun fileShell(device: AdbDevice, vararg args: String, throwOnError: Boolean = false): List<String> {
+        val pkg = packageNameForPath(args.joinToString(" "))
+        if (pkg == null || isDeviceRooted(device)) {
+            return adb.shell(device, *args, throwOnError = throwOnError)
+        }
+        return adb.shell(device, "run-as", pkg, "sh", "-c", shellQuote(args.joinToString(" ")), throwOnError = throwOnError)
+    }
+
+    private fun packageNameForPath(path: String): String? {
+        val marker = "/data/data/"
+        val markerIndex = path.indexOf(marker)
+        if (markerIndex < 0) return null
+        val tail = path.substring(markerIndex + marker.length)
+        val packageName = tail.takeWhile { it != '/' && it != '\'' && it != '"' && !it.isWhitespace() }
+        return packageName.takeIf { RUN_AS_PACKAGE.matches(it) }
+    }
+
+    private suspend fun isDeviceRooted(device: AdbDevice): Boolean = try {
+        adb.shell(device, "id", throwOnError = false).any { line ->
+            line.contains("uid=0(") || line.trim().startsWith("uid=0 ")
+        }
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun normalizeRemotePath(path: String): String {
+        if (path.isBlank()) return "/"
+        return "/" + path.trim('/')
+    }
+
+    private suspend fun pushPathAs(device: AdbDevice, pkg: String, source: File, dest: String) {
+        require(source.exists()) { "Local path does not exist: ${source.absolutePath}" }
+        if (source.isDirectory) {
+            fileShell(device, "mkdir", "-p", shellQuote(dest), throwOnError = true)
+            source.listFiles()?.sortedBy { it.name }?.forEach { pushPathAs(device, pkg, it, appendRemotePath(dest, it.name)) }
+        } else {
+            val parent = dest.substringBeforeLast('/', "/").ifEmpty { "/" }
+            fileShell(device, "mkdir", "-p", shellQuote(parent), throwOnError = true)
+            val stage = appendRemotePath(parent, ".afm-${UUID.randomUUID()}.tmp")
+            try {
+                adb.pushAs(device, pkg, source.absolutePath, stage, throwOnError = true)
+                fileShell(device, "mv", "-f", "--", shellQuote(stage), shellQuote(dest), throwOnError = true)
+            } finally {
+                withContext(NonCancellable + Dispatchers.IO) { runCatching { fileShell(device, "rm", "-f", "--", shellQuote(stage)) } }
+            }
+        }
+    }
+
     private fun appendRemotePath(parent: String, name: String): String =
         if (parent == "/") "/$name" else "${parent.trimEnd('/')}/$name"
 
@@ -231,14 +397,14 @@ class AdbFileOperations(
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
         val srcPath = if (sourcePath.startsWith("/")) sourcePath else "/$sourcePath"
         val destPath = if (destDirectory.startsWith("/")) destDirectory else "/$destDirectory"
-        adb.shell(device, "cp", "-r", "--", shellQuote(srcPath), shellQuote(destPath), throwOnError = true)
+        fileShell(device, "cp", "-r", "--", shellQuote(srcPath), shellQuote(destPath), throwOnError = true)
     }
 
     suspend fun moveFile(sourcePath: String, destDirectory: String) {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
         val srcPath = if (sourcePath.startsWith("/")) sourcePath else "/$sourcePath"
         val destPath = if (destDirectory.startsWith("/")) destDirectory else "/$destDirectory"
-        adb.shell(device, "mv", "--", shellQuote(srcPath), shellQuote(destPath), throwOnError = true)
+        fileShell(device, "mv", "--", shellQuote(srcPath), shellQuote(destPath), throwOnError = true)
     }
 
     suspend fun changePermissions(directoryPath: String, fileName: String, permissions: String) {
@@ -246,7 +412,7 @@ class AdbFileOperations(
         val safePath = if (directoryPath.isEmpty()) "" else "/$directoryPath"
         val fullPath = if (safePath.isEmpty()) "/$fileName" else "$safePath/$fileName"
         println("Changing permissions for: $fullPath to $permissions")
-        val result = adb.shell(device, "chmod", permissions, "--", shellQuote(fullPath), throwOnError = true)
+        val result = fileShell(device, "chmod", permissions, "--", shellQuote(fullPath), throwOnError = true)
         println("chmod result: $result")
     }
 
@@ -659,6 +825,7 @@ class AdbFileOperations(
         private const val REMOTE_STAGE_PREFIX = "adb-file-manager-"
         private const val CLIPBOARD_HELPER_CLASS = "top.wkbin.clipboard.ClipboardHelper"
         private const val CLIPBOARD_SUCCESS_MARKER = "CLIPBOARD_SET_OK"
+        private val RUN_AS_PACKAGE = Regex("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$")
 
         @OptIn(ExperimentalResourceApi::class)
         private suspend fun loadClipboardHelper(): ByteArray {
