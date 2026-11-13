@@ -62,7 +62,7 @@ class AdbFileOperations(
     private suspend fun syntheticDataDirectoryListing(device: AdbDevice, path: String): List<String>? {
         return when (path) {
             "/data" -> syntheticDirectoryRows(listOf("data", "app", "local"))
-            "/data/data" -> listAllPackageNames(device).map(::syntheticDirectoryRow)
+            "/data/data" -> listAllPackageNames(device).map { syntheticDirectoryRow(it, true) }
             "/data/app" -> listDataAppEntries(device, path)
             "/data/local" -> syntheticDirectoryRows(listOf("tmp"))
             else -> if (path.startsWith("/data/app/")) listDataAppEntries(device, path) else null
@@ -820,6 +820,7 @@ class AdbFileOperations(
         private const val REMOTE_STAGE_PREFIX = "adb-file-manager-"
         private const val CLIPBOARD_HELPER_CLASS = "top.wkbin.clipboard.ClipboardHelper"
         private const val CLIPBOARD_SUCCESS_MARKER = "CLIPBOARD_SET_OK"
+        private val RUN_AS_PACKAGE = Regex("^[A-Za-z_][A-Za-z0-9_]*(\\\\.[A-Za-z_][A-Za-z0-9_]*)+$")
 
         @OptIn(ExperimentalResourceApi::class)
         private suspend fun loadClipboardHelper(): ByteArray {
