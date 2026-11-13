@@ -64,8 +64,6 @@ fun SettingsDialog(
     var scrcpyTurnScreenOff by remember(visible) { mutableStateOf(AppSettings.scrcpyTurnScreenOff) }
     var scrcpyStayAwake by remember(visible) { mutableStateOf(AppSettings.scrcpyStayAwake) }
     var scrcpyCustomPath by remember(visible) { mutableStateOf(AppSettings.scrcpyCustomPath) }
-    var runAsPackage by remember(visible) { mutableStateOf(AppSettings.runAsPackage) }
-    val validRunAsPackage = runAsPackage.isBlank() || Regex("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$").matches(runAsPackage.trim())
     var isUpdatingScrcpy by remember(visible) { mutableStateOf(false) }
     var scrcpyUpdateStatus by remember(visible) { mutableStateOf<String?>(null) }
 
@@ -309,22 +307,6 @@ fun SettingsDialog(
                     HorizontalDivider(color = FluentTheme.colors.stroke.divider.default.copy(alpha = 0.5f))
                     Spacer(Modifier.height(16.dp))
 
-                    Text("App-private storage access (run-as)", style = FluentTheme.typography.bodyStrong,
-                        fontWeight = FontWeight.Bold, color = FluentTheme.colors.text.accent.primary)
-                    Spacer(Modifier.height(8.dp))
-                    Text("Enter a debuggable Android package, e.g. com.termux. File browsing and transfers will run as that app UID. Leave blank for normal ADB shell.",
-                        style = FluentTheme.typography.caption, color = FluentTheme.colors.text.text.secondary)
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(value = runAsPackage, onValueChange = { runAsPackage = it },
-                        label = { Text("Run-as package name") }, placeholder = { Text("com.termux") },
-                        singleLine = true, isError = !validRunAsPackage, modifier = Modifier.fillMaxWidth())
-                    if (!validRunAsPackage) Text("Invalid Android package name.", style = FluentTheme.typography.caption,
-                        color = FluentTheme.colors.system.critical)
-
-                    Spacer(Modifier.height(24.dp))
-                    HorizontalDivider(color = FluentTheme.colors.stroke.divider.default.copy(alpha = 0.5f))
-                    Spacer(Modifier.height(16.dp))
-
                     // ── General Preferences ────────────────────────────────
                     Text(
                         text = "通用与导出偏好",
@@ -554,7 +536,6 @@ fun SettingsDialog(
                             scrcpyTurnScreenOff = AppSettings.scrcpyTurnScreenOff
                             scrcpyStayAwake = AppSettings.scrcpyStayAwake
                             scrcpyCustomPath = AppSettings.scrcpyCustomPath
-                            runAsPackage = AppSettings.runAsPackage
                             testResult = null
                         }
                     ) {
@@ -568,7 +549,6 @@ fun SettingsDialog(
                             Text("取消")
                         }
                         Button(
-                            enabled = validRunAsPackage,
                             onClick = {
                                 AppSettings.useKadbWireless = useKadbWireless
                                 AppSettings.adbMode = adbMode
@@ -581,7 +561,6 @@ fun SettingsDialog(
                                 AppSettings.scrcpyTurnScreenOff = scrcpyTurnScreenOff
                                 AppSettings.scrcpyStayAwake = scrcpyStayAwake
                                 AppSettings.scrcpyCustomPath = scrcpyCustomPath.trim()
-                                AppSettings.runAsPackage = runAsPackage.trim()
                                 onSaved()
                                 onDismiss()
                             }
