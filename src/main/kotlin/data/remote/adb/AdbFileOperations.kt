@@ -38,12 +38,18 @@ class AdbFileOperations(
         val safePath = if (directoryPath.isEmpty()) "/" else "/$directoryPath"
         println("Executing loadFiles for path: '$safePath'")
 
-        // ponytail: escape | as \| so the remote shell doesn't interpret it as pipe.
-        // Using cd && stat directly (no sh -c) so cd actually changes the working directory.
+        // Escape format separators so the remote shell passes them to stat literally.
+        // find handles empty directories cleanly and avoids relying on shell glob expansion.
         val statFormat = "%F|%A|%h|%U|%G|%s|%Y|%n|%N"
         val escapedFormat = statFormat.replace("|", "\\|")
         val targetPath = shellQuote(safePath)
-        return fileShell(device, "cd", targetPath, "&&", "stat", "-L", "-c", escapedFormat, "*", "2>/dev/null")
+        return fileShell(
+            device,
+            "find", targetPath,
+            "-mindepth", "1", "-maxdepth", "1",
+            "-exec", "stat", "-L", "-c", escapedFormat, "{}", "+",
+            throwOnError = true
+        )
     }
 
     suspend fun searchFiles(directoryPath: String, query: String, maxDepth: Int = 4): List<String> {
@@ -101,13 +107,14 @@ class AdbFileOperations(
     suspend fun checkPermission(directoryPath: String): Boolean {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
         val safePath = if (directoryPath.isEmpty()) "/" else "/$directoryPath"
-        return try {
-            // ponytail: same fix as loadFiles — cd directly, not via sh -c
-            val result = fileShell(device, "cd", shellQuote(safePath), "&&", "echo", "SUCCESS", "||", "echo", "FAILURE")
-            !result.any { it.contains("Permission denied") || it.contains("FAILURE") }
-        } catch (e: Exception) {
-            false
-        }
+        // Let run-as failures propagate so callers can show the actual error
+        // (for example, "package is not debuggable") instead of treating it as an empty folder.
+        val result = fileShell(
+            device,
+            "cd", shellQuote(safePath), "&&", "echo", "SUCCESS", "||", "echo", "FAILURE",
+            throwOnError = true
+        )
+        return result.any { it.trim() == "SUCCESS" }
     }
 
     suspend fun renameFile(directoryPath: String, oldName: String, newName: String) {
