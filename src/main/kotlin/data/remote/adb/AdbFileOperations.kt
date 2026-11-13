@@ -40,7 +40,7 @@ class AdbFileOperations(
         // Android deliberately restricts shell access to much of /data on production
         // builds. Mirror Aya's useful, non-root directory view instead of pretending
         // that run-as grants access to the whole /data tree.
-        if (!isDeviceRooted(device)) {
+        if (isSyntheticDataPath(safePath) && !isDeviceRooted(device)) {
             syntheticDataDirectoryListing(device, safePath)?.let { return it }
         }
 
@@ -58,6 +58,13 @@ class AdbFileOperations(
             throwOnError = true
         )
     }
+
+    private fun isSyntheticDataPath(path: String): Boolean =
+        path == "/data" ||
+            path == "/data/data" ||
+            path == "/data/app" ||
+            path == "/data/local" ||
+            path.startsWith("/data/app/")
 
     private suspend fun syntheticDataDirectoryListing(device: AdbDevice, path: String): List<String>? {
         return when (path) {
@@ -204,14 +211,7 @@ class AdbFileOperations(
     suspend fun checkPermission(directoryPath: String): Boolean {
         val device = currentDeviceProvider() ?: throw AdbDeviceNotFoundException()
         val safePath = normalizeRemotePath(directoryPath)
-        if (!isDeviceRooted(device) && (
-                safePath == "/data" ||
-                safePath == "/data/data" ||
-                safePath == "/data/app" ||
-                safePath == "/data/local" ||
-                safePath.startsWith("/data/app/")
-            )
-        ) return true
+        if (isSyntheticDataPath(safePath) && !isDeviceRooted(device)) return true
 
         return try {
             val result = fileShell(
