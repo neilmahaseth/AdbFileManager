@@ -59,7 +59,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.unit.dp
-import model.AppSettings
 import model.Bookmark
 import model.FileItem
 import model.SortType
@@ -107,7 +106,6 @@ import javax.swing.JFileChooser
 @Composable
 fun FileManagerScreen(onOpenSettings: () -> Unit = {}) {
     val remoteViewModel = koinViewModel<FileManagerViewModel>(key = "remote-file-pane")
-    val runAsPackage by AppSettings.runAsPackageFlow.collectAsState()
     var activePane by remember { mutableStateOf(FilePaneSide.LEFT) }
     var localDirectory by remember { mutableStateOf(File(System.getProperty("user.home"))) }
     var localRefreshVersion by remember { mutableStateOf(0) }
@@ -116,9 +114,8 @@ fun FileManagerScreen(onOpenSettings: () -> Unit = {}) {
     }
     val strings by StringsManager.strings.collectAsState()
 
-    LaunchedEffect(remoteViewModel, runAsPackage) {
-        val initialPath = if (runAsPackage.isBlank()) "storage/emulated/0" else "data/data/${runAsPackage.trim()}"
-        remoteViewModel.dispatch(FileManagerIntent.ResetDirectory(initialPath))
+    LaunchedEffect(remoteViewModel) {
+        remoteViewModel.dispatch(FileManagerIntent.ResetDirectory("storage/emulated/0"))
     }
 
     Row(modifier = Modifier.fillMaxSize().padding(6.dp)) {
