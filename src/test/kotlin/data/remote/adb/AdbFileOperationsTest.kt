@@ -161,6 +161,34 @@ class AdbFileOperationsTest {
     }
 
     @Test
+    fun `directory listing keeps accessible entries when other paths are denied`() = runBlocking {
+        val adb = RecordingAdb().apply {
+            shellResponse = { args ->
+                when (args.firstOrNull()) {
+                    "id" -> listOf("uid=2000(shell) gid=2000(shell)")
+                    "find" -> listOf(
+                        "directory|drwxr-xr-x|1|root|root|4096|0|vendor|vendor",
+                        "directory|drwxrwx--x|1|system|system|4096|0|data|data"
+                    )
+                    else -> emptyList()
+                }
+            }
+        }
+        val operations = AdbFileOperations(
+            adb = adb,
+            currentDeviceProvider = { device },
+            windowsPushWorkaroundEnabled = false
+        )
+
+        val entries = operations.loadFiles("/")
+
+        assertEquals(2, entries.size)
+        val listingCall = adb.shellCalls.single { it.args.firstOrNull() == "find" }
+        assertEquals(listOf("2>/dev/null", "||", "true"), listingCall.args.takeLast(3))
+        assertTrue(listingCall.throwOnError)
+    }
+
+    @Test
     fun `searchFiles constructs find command with maxdepth and stat format`() = runBlocking {
         val adb = RecordingAdb()
         val operations = AdbFileOperations(
