@@ -55,6 +55,10 @@ class AdbFileOperations(
             "find", shellQuote(path),
             "-mindepth", "1", "-maxdepth", "1",
             "-exec", "stat", "-L", "-c", escapedFormat, "{}", "+",
+            // Some Android system entries are intentionally unreadable or dangling.
+            // Keep the entries find did read and prevent those per-entry errors from
+            // failing the entire directory listing (notably when browsing "/").
+            "2>/dev/null", "||", "true",
             throwOnError = true
         )
     }
